@@ -58,7 +58,7 @@ def start_video_capture(save_dir):
             
             screenshot = sct.grab(monitor)
             mouse_x, mouse_y = mouse_controller.position
-            mouse_x, mouse_y = mouse_x + 1208, mouse_y + 1080
+            mouse_x, mouse_y = mouse_x - monitor['left'], mouse_y - monitor['top']
             mouse_x, mouse_y = (int(mouse_x*mouse_x_ratio), int(mouse_y*mouse_y_ratio))
 
             frame = np.array(screenshot)
@@ -67,13 +67,13 @@ def start_video_capture(save_dir):
             frame = cv2.resize(frame, (adjusted_width, adjusted_height))
 
             # To draw mouse in screenshot
-            # frame = cv2.circle(frame, (int(x), int(y)), 100, (0, 255, 0), -1)
+            frame = cv2.circle(frame, (int(mouse_x), int(mouse_y)), 100, (0, 255, 0), -1)
             out.write(frame)
 
             # Frame rate control
             elapsed = (datetime.datetime.now() - start_time).total_seconds()
             sleep_time = max(1.0 / SHOTS_PER_SECOND - elapsed, 0)
-            # cv2.imshow("combined screens", frame)
+            cv2.imshow("combined screens", frame)
             cv2.waitKey(int(sleep_time * 1000))
 
         out.release()
