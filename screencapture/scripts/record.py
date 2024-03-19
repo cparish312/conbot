@@ -161,7 +161,7 @@ def start_video_capture(save_dir: str):
 
         # Get start time
         video_start_time = time.time()
-        video_start_timestr = time.strftime('%Y-%m-%d-%H-%M-%S-%Z', time.localtime(video_start_time))
+        video_start_timestr = time.strftime('%Y-%m-%d-%H-%M-%S-%Z', time.gmtime(video_start_time))
         video_start_timestr_split = video_start_timestr.split('-')
         today_save_dir = os.path.join(save_dir, f'{video_start_timestr_split[0]}/{video_start_timestr_split[1]}/{video_start_timestr_split[2]}')
         utils.make_dirs(today_save_dir)
