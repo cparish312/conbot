@@ -1,5 +1,6 @@
 """Script created by Connor Parish for recording actions on a computer."""
 import os
+import json
 import time
 import threading
 
@@ -13,7 +14,8 @@ import utils
 
 SAVE_DIR = "/Users/connorparish/code/conbot/screencapture/screenshot_data/raw/"
 SHOTS_PER_SECOND=1
-RESOLUTION_FACTOR=1.2 # For decreasing size of videos
+# RESOLUTION_FACTOR=1.2 # For decreasing size of videos
+RESOLUTION_FACTOR=1 # For decreasing size of videos
 RECORDING_STOP_DELAY=60 # In seconds
 
 user_active = True
@@ -148,6 +150,23 @@ def get_monitor_count():
     """Returns the current number of monitors."""
     with mss.mss() as sct:
         return len(sct.monitors)
+    
+def save_video_metadata(sct, metadata_save_file):
+    all_monitors = sct.monitors[0]
+    def get_monitor_dims(mon):
+        frame_adjust_factor = (2 / RESOLUTION_FACTOR)
+        left = (mon['left'] - all_monitors['left']) * frame_adjust_factor 
+        top = (mon['top'] - all_monitors['top']) * frame_adjust_factor 
+        return int(left), int(top), int(mon['width'] * frame_adjust_factor), int(mon['height'] * frame_adjust_factor)
+    
+    monitor_dims = list()
+    for monitor in sct.monitors[1:]:
+        left, top, width, height = get_monitor_dims(monitor)
+        monitor_dims.append({'left' : left, 'top' : top, 'width' : width, 'height' : height})
+
+    metadata_d = {"monitors": monitor_dims}
+    with open(metadata_save_file, 'w') as outfile:
+        json.dump(metadata_d, outfile)
 
 def start_video_capture(save_dir: str):
     global screen_recording 
@@ -170,12 +189,21 @@ def start_video_capture(save_dir: str):
 
         # Define the codec and create VideoWriter object
         # Get width and height of frame (combined screen doesn't match desribed width and height)
-        frame = np.array(sct.grab(monitor))
+        try:
+            frame = np.array(sct.grab(monitor))
+        except:
+            print("Couldn't start video.")
+            user_active = False
+            screen_recording = False
+            return
         height, width = frame.shape[0], frame.shape[1]
         adjusted_height, adjusted_width = (int(height//RESOLUTION_FACTOR), int(width//RESOLUTION_FACTOR))
         fourcc = cv2.VideoWriter_fourcc(*"avc1")  # Efficient codec for .mp4
         out = cv2.VideoWriter(video_filename, fourcc, SHOTS_PER_SECOND, (adjusted_width, adjusted_height))
+        metdata_save_file = os.path.join(today_save_dir, f'connor_mac_screen_recording_metadata-{video_start_timestr}.json')
+        save_video_metadata(sct, metdata_save_file)
 
+        print(time.strftime('%Y-%m-%d-%H-%M-%S-%Z', time.localtime()))
         print(f"Starting video capture: {video_filename}")
         # mouse_controller = mouse.Controller()
 
@@ -191,14 +219,23 @@ def start_video_capture(save_dir: str):
                 return
             
             start_time = time.time()
-            
-            screenshot = sct.grab(monitor)
+            try:
+                screenshot = sct.grab(monitor)
+            except:
+                print("Couldn't grab screen so stopped video")
+                out.release()
+                cv2.destroyAllWindows()  # Ensure all windows are closed
+                save_actions(keystrokes_filename, monitor, adjusted_height, adjusted_width)
+                print(f"Video and keystrokes saved: {video_filename}")
+                start_video_capture(save_dir=save_dir)
+                return
             # mouse_x, mouse_y = mouse_controller.position
 
             frame = np.array(screenshot)
             # Convert from BGRA to BGR
             frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-            frame = cv2.resize(frame, (adjusted_width, adjusted_height))
+            if RESOLUTION_FACTOR != 1:
+                frame = cv2.resize(frame, (adjusted_width, adjusted_height))
 
             out.write(frame)
 
