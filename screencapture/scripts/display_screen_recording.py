@@ -27,9 +27,12 @@ VIDEO_SAVE_DIR = "/Users/connorparish/code/conbot/screencapture/screenshot_data/
 VIDEO_CHANGES_DIR = "/Users/connorparish/code/conbot/screencapture/video_changes/"
 TEXT_EXTRACT_DIR = "/Users/connorparish/code/conbot/screencapture/video_text_extract_ocrmac/"
 
+VIDEO_SUMMARIES_CSV = "/Users/connorparish/code/conbot/screencapture/screenshot_data/videos_summary.csv"
+
 
 FRAME_CHANGE_THRESHOLD = 0.05
 local_timezone = tzlocal.get_localzone()
+video_timezone = ZoneInfo("UTC")
 
 today_date = datetime.now().date() - timedelta(days=1)
 time_at_2_10 = dt_time(hour=14, minute=10)  # Using 24-hour format for 2:10 PM
@@ -44,28 +47,22 @@ class VideoFrame:
     text_df: pd.DataFrame
 
 class VideoManager:
-    def __init__(self, video_path, video_start_datetime, frame_num_start=None, frame_num_end=None, frame_change_threshold=FRAME_CHANGE_THRESHOLD):
+    def __init__(self, video_path, video_start_datetime, video_end_datetime, frame_change_threshold=FRAME_CHANGE_THRESHOLD):
+        self.video_path = video_path
         self.cap = cv2.VideoCapture(video_path)
         if not self.cap.isOpened():
             raise ValueError(f"Error opening video file: {video_path}")
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.frame_changes = self.load_frame_changes(video_path)
-        self.unqiue_frame_to_frame_num = self.get_unique_frames(frame_change_threshold=frame_change_threshold)
+        self.unqiue_frames_df = self.get_unique_frames(frame_change_threshold=frame_change_threshold)
         self.total_unique_frames = len(self.unqiue_frame_to_frame_num)
         print(f"{video_path} Total Frames: {self.total_frames} Unique Frames: {self.total_unique_frames}")
-        self.set_frame_nums(frame_num_start=frame_num_start, frame_num_end=frame_num_end)
         self.video_start_datetime = video_start_datetime
+        self.video_end_datetime = video_end_datetime
         self.open_keystrokes(video_path)
         self.open_video_metadata(video_path)
         self.extracted_text_df = self.load_extracted_text(video_path)
-
-    def set_frame_nums(self, frame_num_start, frame_num_end):
-        if frame_num_end is None:
-            self.frame_num_start = frame_num_start
-            self.frame_num_end = frame_num_start + self.total_unique_frames - 1 # Needed for indexing
-        else:
-            self.frame_num_end = frame_num_end
-            self.frame_num_start = frame_num_end - self.total_unique_frames
 
     def open_keystrokes(self, video_path):
         self.keystrokes_df = None
@@ -164,18 +161,18 @@ class VideoManager:
         return text_df
     
     def get_unique_frames(self, frame_change_threshold):
-        if self.frame_changes is None:
-            return {i : i for i in range(self.total_frames)}
-        unqiue_frame_to_frame_num = {0 : 0}
+        # if self.frame_changes is None:
+        #     return {i : i for i in range(self.total_frames)}
+        unique_frames_l = list({"frame_num" : 0, "unique_frame_num" : 0})
         unique_frame_c = 1
         cum_diff_percent = 0
         for i, fc in enumerate(self.frame_changes):
             cum_diff_percent += fc['diff_percent']
             if cum_diff_percent >= frame_change_threshold:
-                unqiue_frame_to_frame_num[unique_frame_c] = i + 1
+                unique_frames_l.append({"frame_num" : i + 1, "unique_frame_num" : unique_frame_c})
                 unique_frame_c += 1
                 cum_diff_percent = 0
-        return unqiue_frame_to_frame_num
+        return pd.DataFrame(unique_frames_l)
 
     def get_active_monitor(self, frame, frame_timestamp):
         if self.keystrokes_df is None or self.metadata is None:
@@ -191,9 +188,8 @@ class VideoManager:
                     # return frame[monitor['top'] : monitor['top'] + monitor['height'], monitor['left'] : monitor['left'] + monitor['width']]
             
         raise ValueError(f"Position ({x}, {y}) outside of monitors.")
-
-    def get_frame(self, unique_frame_num):
-        frame_num = self.unqiue_frame_to_frame_num[self.frame_num_end - unique_frame_num]
+    
+    def get_frame(self, frame_num):
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
         ret, frame = self.cap.read()
         if ret:
@@ -211,83 +207,126 @@ class VideoManager:
                         frame_text_df['x'] -= active_monitor[0]
                         frame_text_df['y'] -= active_monitor[1]
             return VideoFrame(frame=frame, timestamp=frame_timestamp, text_df=frame_text_df)
+    
+    def get_next_frame(self, time_to_retrieve, newer=False):
+        if time_to_retrieve < self.video_start_datetime or time_to_retrieve > self.video_end_datetime:
+            raise ValueError(f"{time_to_retrieve} out of range for {self.video_path}")
+        frame_num_to_retrieve = int((time_to_retrieve - self.video_start_datetime).total_seconds() * self.fps)
+        time_retrieve_index = self.unqiue_frames_df.loc[self.unqiue_frames_df['frame_num'] <= frame_num_to_retrieve].index.iloc[-1] # Get first unique frame before frame_num_to_retrieve
+        if newer:
+            if time_retrieve_index > len(self.unqiue_frames_df) - 1:
+                return None
+            frame_num = self.unqiue_frames_df.iloc[time_retrieve_index + 1]['frame_num']
+        else:
+            if time_retrieve_index < 1:
+                return None
+            frame_num = self.unqiue_frames_df.iloc[time_retrieve_index - 1]['frame_num']
+        return self.get_frame(frame_num)
+
+    def get_frame_by_time(self, time_to_retrieve):
+        if time_to_retrieve < self.video_start_datetime or time_to_retrieve > self.video_end_datetime:
+            raise ValueError(f"{time_to_retrieve} out of range for {self.video_path}")
+        frame_num_to_retrieve = int((time_to_retrieve - self.video_start_datetime).total_seconds() * self.fps)
+        frame_num = self.unqiue_frames_df.loc[self.unqiue_frames_df['frame_num'] <= frame_num_to_retrieve]['frame_num'].iloc[-1] # Get first unique frame before frame_num_to_retrieve
+        return self.get_frame(frame_num)
+
 
 class VideoTimelineManager:
-    def __init__(self, video_save_dir=VIDEO_SAVE_DIR, min_frames_count=100):
-        self.create_video_paths_list(video_save_dir)
-        self.min_frames_count = min_frames_count
-        self.initalize_video_managers(self.min_frames_count)
+    def __init__(self, video_summaries_path=VIDEO_SUMMARIES_CSV, min_time_buffer=timedelta(minutes=15)):
+        self.video_paths_df = self.create_video_paths_df(video_summaries_path)
+        self.scroll_time = max(self.video_paths_df['end_datetime'])
+        self.min_time_queued = min_time_buffer
+        self.initalize_video_managers(self.min_time_queued)
 
-    def convert_timezone_to_local(self, video_start_datetime, video_timezone):
-        if video_timezone == "MDT": # All videos should now be stored in UTC
-            video_timezone = "America/Denver"
-        video_timezone = ZoneInfo(video_timezone)
-        if video_timezone == local_timezone:
-            return video_start_datetime.replace(tzinfo=video_timezone)
-        else:
-            return video_start_datetime.replace(tzinfo=video_timezone).astimezone(local_timezone)
+    def create_video_paths_df(self, video_summaries_path):
+        video_paths_df = pd.read_csv(video_summaries_path)
+        video_paths_df['start_datetime'] = pd.to_datetime(video_paths_df['start_datetime'])
+        video_paths_df['start_datetime'] = video_paths_df['start_datetime'].apply(lambda x: x.replace(tzinfo=video_timezone).astimezone(local_timezone))
+        video_paths_df['end_datetime'] = pd.to_datetime(video_paths_df['end_datetime'])
+        video_paths_df['end_datetime'] = video_paths_df['end_datetime'].apply(lambda x: x.replace(tzinfo=video_timezone).astimezone(local_timezone))
+        video_paths_df['video_length'] = video_paths_df['end_datetime'] - video_paths_df['start_datetime']
+        print("Total Video Paths", len(self.video_paths_df))
 
-    def create_video_paths_list(self, video_save_dir):
-        self.video_paths_list = list()
-        for video_path in glob.glob(f"{video_save_dir}*/*/*/*.mp4"):
-            video_start_timestr_no_tz = video_path.split('-', 1)[1].rsplit('-', 1)[0]
-            video_start_tz = video_path.split('-', 1)[1].rsplit('-', 1)[1].split('.')[0]
-            try:
-                video_start_datetime = datetime.strptime(video_start_timestr_no_tz, '%Y-%m-%d-%H-%M-%S')
-            except: 
-                video_start_datetime = datetime.strptime(video_start_timestr_no_tz, '%Y-%m-%d-%H-%M')
-            video_start_datetime = self.convert_timezone_to_local(video_start_datetime=video_start_datetime, video_timezone=video_start_tz)
-            if STARTING_TIME is not None and video_start_datetime > STARTING_TIME:
-                continue
-            self.video_paths_list.append((video_start_datetime, video_path))
+        return video_paths_df.sort_values(by='start_datetime')
 
-        print("Total Video Paths", len(self.video_paths_list))
-        self.video_paths_list.sort(key=lambda item: item[0], reverse=True)
+    def add_video_manager(self, video_row):  
+        new_video_manager = VideoManager(video_path=video_row['video_path'],
+                                         video_start_datetime=video_row['start_datetime'],
+                                         video_end_datetime=video_row['end_datetime'])   
+               
+        self.video_managers[video_row['video_path']] = new_video_manager
 
-    def add_video_manager(self, newer=False):
-        frame_num_start = None
-        frame_num_end = None
-        if len(self.video_managers) == 0:
-            add_path_index = 0
-            frame_num_start = 0
-        elif newer:
-            add_path_index = self.video_managers[0][0] - 1
-            frame_num_end = self.video_managers[0][1].frame_num_start
-        else:
-            add_path_index = self.video_managers[-1][0] + 1
-            frame_num_start = self.video_managers[-1][1].frame_num_end
-            
-        try:
-            new_video_manager = VideoManager(self.video_paths_list[add_path_index][1], 
-                                            self.video_paths_list[add_path_index][0],
-                                            frame_num_start=frame_num_start,
-                                            frame_num_end=frame_num_end)
-        except ValueError as e:
-            print(e)
-            # print(f"Error opening video file: {self.video_paths_list[add_path_index][1]}")
-            del self.video_paths_list[add_path_index]
-            self.add_video_manager(newer=newer)
-            return
+    def get_queued_timeline(self):
+        video_managers_queued = set(self.video_managers.keys())
+        queued_videos_df = self.video_paths_df.loc[self.self.video_paths_df['video_path'].isin(video_managers_queued)]
+        return min(queued_videos_df['start_datetime']), max(queued_videos_df['end_datetime'])
+    
+    def get_queued_time_buffers(self):
+        video_managers_queued = set(self.video_managers.keys())
+        queued_videos_df = self.video_paths_df.loc[self.self.video_paths_df['video_path'].isin(video_managers_queued)]
+        older_buffer = timedelta(seconds=0)
+        newer_buffer = timedelta(seconds=0)
+        for i, video_row in queued_videos_df.iterrows():
+            if video_row['start_datetime'] < self.scroll_time and video_row['end_datetime'] < self.scroll_time:
+                older_buffer += video_row['end_datetime'] - video_row['start_datetime']
+            elif video_row['start_datetime'] > self.scroll_time and video_row['end_datetime'] > self.scroll_time:
+                newer_buffer +=  video_row['end_datetime'] - self.scroll_time
+            else:
+                older_buffer += self.scroll_time - video_row['start_datetime']
+                newer_buffer +=  video_row['end_datetime'] - self.scroll_time
+        return older_buffer, newer_buffer
+                    
+    def initalize_video_managers(self):
+        self.video_managers = {}
+        non_queued_videos_df = self.video_paths_df.loc[~(self.self.video_paths_df['video_path'].isin(set(self.video_managers.keys())))]
+        within_non_queued_videos_df = non_queued_videos_df.loc[(non_queued_videos_df['start_datetime'] <= self.scroll_time) * (non_queued_videos_df['end_datetime'] >= self.scroll_time)]
+        self.add_video_manager(within_non_queued_videos_df.iloc[0])
+        non_queued_videos_df = non_queued_videos_df.drop(0)
+        self.current_video_manager = (self.video_managers[within_non_queued_videos_df.iloc[0]], self.video_managers[within_non_queued_videos_df.iloc[0]].total_unique_frames)
+        older_buffer, newer_buffer = self.get_queued_time_buffers()
+        older_non_queued_videos_df = non_queued_videos_df.loc[non_queued_videos_df['end_datetime'] <= self.scroll_time]
+        while older_buffer < self.min_time_buffer:
+            add_video_row = older_non_queued_videos_df.iloc[-1]
+            self.add_video_manager(add_video_row)
+            older_non_queued_videos_df = older_non_queued_videos_df.iloc[:-1]
+            older_buffer, newer_buffer = self.get_queued_time_buffers()
 
-        if newer:
-            self.video_managers.appendleft((add_path_index, new_video_manager))
-        else:
-            self.video_managers.append((add_path_index, new_video_manager))
-
-    def initalize_video_managers(self, min_frames_count):
-        self.video_managers = deque()
-        self.add_video_manager()
-        while self.video_managers[-1][1].frame_num_end < min_frames_count:
-            self.add_video_manager()
+        newer_non_queued_videos_df = non_queued_videos_df.loc[non_queued_videos_df['start_datetime'] >= self.scroll_time]
+        while newer_buffer < self.min_time_buffer:
+            add_video_row = newer_non_queued_videos_df.iloc[0]
+            self.add_video_manager(add_video_row)
+            newer_non_queued_videos_df = newer_non_queued_videos_df.iloc[1:]
+            older_buffer, newer_buffer = self.get_queued_time_buffers()
         print("Number of video managers: ", len(self.video_managers))
 
-    def get_frame(self, frame_num):
-        for _, video_manager in self.video_managers:
-            if frame_num >= video_manager.frame_num_start and frame_num < video_manager.frame_num_end:
-                return video_manager.get_frame(frame_num)
+    def get_frame(self, frame_num_change):
+        video_manager, current_frame_num = self.current_video_manager
+        frame_num_to_get = current_frame_num + frame_num_change
+        if frame_num_to_get < 0:
+            pass
+        if frame_num_to_get > video_manager.total_unique_frames:
+            pass
         
-        self.add_video_manager()
-        return self.get_frame(frame_num)
+        return video_manager.get_frame(video_manager.iloc[frame_num_to_get]['frame_num'])
+        
+            # time_to_retrieve_video_df = self.video_paths_df.loc[(self.video_paths_df['start_datetime'] <= time_to_retrieve) & (self.video_paths_df['end_datetime'] >= time_to_retrieve)]
+            # if time_to_retrieve_video_df.empty:
+            #     raise ValueError(f"{time_to_retrieve} outside of range")
+            # time_to_retrieve_video_row = time_to_retrieve_video_df.iloc[0]
+            # if time_to_retrieve_video_row['video_path'] not in self.video_managers:
+            #     raise ValueError(f"{time_to_retrieve_video_row['video_path']} not in video_managers")
+            # if newer is None:
+            #     return self.video_managers[time_to_retrieve_video_row['video_path']].get_frame_by_time(time_to_retrieve)
+            # elif newer:
+            #     if time_to_retrieve == time_to_retrieve_video_row['end_datetime']:
+            #         time_to_retrieve_video_row = self.video_paths_df.iloc[time_to_retrieve_video_row.index + 1]
+            #         return self.video_managers[time_to_retrieve_video_row['video_path']].get_frame_by_time(time_to_retrieve_video_row['start_datetime'])
+            #     return self.video_managers[time_to_retrieve_video_row['video_path']].get_next_frame(time_to_retrieve, newer=newer)
+            # else:
+            #     if time_to_retrieve == time_to_retrieve_video_row['start_datetime']:
+            #         time_to_retrieve_video_row = self.video_paths_df.iloc[time_to_retrieve_video_row.index - 1]
+            #         return self.video_managers[time_to_retrieve_video_row['video_path']].get_frame_by_time(time_to_retrieve_video_row['end_datetime'])
+            #     return self.video_managers[time_to_retrieve_video_row['video_path']].get_next_frame(time_to_retrieve, newer=newer)
                 
 
 class ScrollableVideoViewer:
@@ -318,14 +357,14 @@ class ScrollableVideoViewer:
         self.preload_thread = Thread(target=self.preload_frames)
         self.preload_thread.start()
 
-    def preload_frame(self, frame_num, appendleft=False):
-        videoframe = self.video_timeline_manager.get_frame(frame_num=frame_num)
+    def preload_frame(self, time_to_retrieve, newer=False):
+        videoframe = self.video_timeline_manager.get_frame(time_to_retrieve=time_to_retrieve, newer=newer)
         self.resize_frame(videoframe, self.max_width, self.max_height)
         self.add_text_boxes(videoframe)
-        if appendleft:
-            self.preloaded_frames.appendleft((frame_num, videoframe))
+        if not newer:
+            self.preloaded_frames.appendleft((time_to_retrieve, videoframe))
         else:
-            self.preloaded_frames.append((frame_num, videoframe))
+            self.preloaded_frames.append((time_to_retrieve, videoframe))
         return videoframe
     
     def add_text_boxes(self, videoframe):
