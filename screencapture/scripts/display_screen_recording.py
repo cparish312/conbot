@@ -5,7 +5,6 @@ import tzlocal
 from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta
 from datetime import time as dt_time
-import glob
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
@@ -341,8 +340,8 @@ class ScrollableVideoViewer:
         
         self.video_timeline_manager = VideoTimelineManager()
 
-        self.preloaded_frames = deque()
-        self.preloaded_frames_lock = threading.Lock()
+        # self.preloaded_frames = deque()
+        # self.preloaded_frames_lock = threading.Lock()
 
         # For mouse dragging
         self.dragging = False
@@ -350,12 +349,12 @@ class ScrollableVideoViewer:
         self.drag_end = None
 
         # Preload first frame
-        self.preload_frame(0, appendleft=False)
+        # self.preload_frame(0, appendleft=False)
         self.setup_gui()
 
         self.exit_flag = False
-        self.preload_thread = Thread(target=self.preload_frames)
-        self.preload_thread.start()
+        # self.preload_thread = Thread(target=self.preload_frames)
+        # self.preload_thread.start()
 
     def preload_frame(self, time_to_retrieve, newer=False):
         videoframe = self.video_timeline_manager.get_frame(time_to_retrieve=time_to_retrieve, newer=newer)
@@ -416,24 +415,28 @@ class ScrollableVideoViewer:
         self.time_label.pack()
         self.bind_scroll_event()
         
-        self.displayed_frame_num = -1
+        self.displayed_frame_num = 0
+        video_frame = self.video_timeline_manager.get_frame(0)
+        self.display_frame(video_frame, self.displayed_frame_num)
         self.master.after(40, self.update_frame_periodically)
 
     def update_frame_periodically(self):
         # Check if the current scroll position has a preloaded frame
         if self.scroll_frame_num != self.displayed_frame_num:
-            with self.preloaded_frames_lock:
-                for preloaded_frame_num, videoframe in self.preloaded_frames:
-                    if preloaded_frame_num == self.scroll_frame_num:
-                        # Display the frame if it's preloaded
-                        self.display_frame(videoframe, preloaded_frame_num)
-                        break
-                else:
-                    # If the frame isn't preloaded, preload and display it immediately
-                    # This will only happen if scrolling outside the preload range
-                    self.preloaded_frames.clear()
-                    videoframe = self.preload_frame(self.scroll_frame_num)
-                    self.display_frame(videoframe, preloaded_frame_num)
+            video_frame = self.video_timeline_manager.get_frame(self.displayed_frame_num - self.scroll_frame_num)
+            self.display_frame(video_frame, self.scroll_frame_num)
+            # with self.preloaded_frames_lock:
+            #     for preloaded_frame_num, videoframe in self.preloaded_frames:
+            #         if preloaded_frame_num == self.scroll_frame_num:
+            #             # Display the frame if it's preloaded
+            #             self.display_frame(videoframe, preloaded_frame_num)
+            #             break
+            #     else:
+            #         # If the frame isn't preloaded, preload and display it immediately
+            #         # This will only happen if scrolling outside the preload range
+            #         self.preloaded_frames.clear()
+            #         videoframe = self.preload_frame(self.scroll_frame_num)
+            #         self.display_frame(videoframe, preloaded_frame_num)
 
         # Schedule the next update
         if not self.exit_flag:
